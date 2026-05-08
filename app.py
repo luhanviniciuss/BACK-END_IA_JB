@@ -28,29 +28,38 @@ def get_db_connection():
         db_url += "&sslmode=require" if "?" in db_url else "?sslmode=require"
     return psycopg2.connect(db_url)
 
-def get_context(query, history=None):
+def get_context(query):
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        
         clean_query = query.lower().strip()
+        
+        # Palavras importantes (ignora "quem", "e", "o", "da", etc)
+        ignore = ["quem", "e", "o", "a", "da", "do", "de", "qual", "motorista", "rota", "subrota"]
+        words = [w for w in clean_query.split() if w not in ignore and (len(w) >= 3 or any(c.isdigit() for c in w))]
+        
         all_results = []
         
-        # 1. BUSCA NO TREINAMENTO (EXCEL)
-        cursor.execute("SELECT resposta_correta FROM treinamento_ia WHERE %s ILIKE '%%' || pergunta || '%%' OR pergunta ILIKE '%%' || %s || '%%' LIMIT 1", (clean_query, clean_query))
+        # 1. BUSCA NO TREINAMENTO
+        cursor.execute("SELECT resposta_correta FROM treinamento_ia WHERE %s ILIKE '%%' || pergunta || '%%' LIMIT 1", (clean_query,))
         train = cursor.fetchone()
-        if train:
-            all_results.append(f"CONHECIMENTO: {train['resposta_correta']}")
+        if train: all_results.append(f"TREINAMENTO: {train['resposta_correta']}")
 
-        # 2. BUSCA NA D23 (MELHORADA PARA CÓDIGOS CURTOS COMO 'FOR' OU '101')
-        # Pega todas as palavras com 3 ou mais letras, ou que tenham números
-        words = [w for w in clean_query.split() if len(w) >= 3 or any(char.isdigit() for char in w)]
-        
-        for w in words:
-            # Busca agressiva: Procura a palavra cercada de espaços ou no início/fim para ser exato
-            cursor.execute("SELECT conteudo FROM documentos WHERE conteudo ILIKE %s LIMIT 8", (f"%{w}%",))
+        # 2. BUSCA DE PRECISÃO (Lógica AND - Todas as palavras na mesma linha)
+        if words:
+            # Constrói a query: WHERE conteudo ILIKE %w1% AND conteudo ILIKE %w2% ...
+            where_clause = " AND ".join(["conteudo ILIKE %s" for _ in words])
+            params = [f"%{w}%" for w in words]
+            cursor.execute(f"SELECT conteudo FROM documentos WHERE {where_clause} LIMIT 10", params)
             for r in cursor.fetchall():
                 all_results.append(r['conteudo'])
+
+        # 3. BUSCA DE BACKUP (Se a de precisão falhar, tenta palavras isoladas)
+        if not all_results and words:
+            for w in words[:2]:
+                cursor.execute("SELECT conteudo FROM documentos WHERE conteudo ILIKE %s LIMIT 5", (f"%{w}%",))
+                for r in cursor.fetchall():
+                    all_results.append(r['conteudo'])
         
         conn.close()
         return "\n\n".join(list(dict.fromkeys(all_results))[:15])
@@ -82,24 +91,13 @@ def ask():
     def generate():
         genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
         model = genai.GenerativeModel("gemini-flash-latest")
-        
-        prompt = f"""
-        Você é o Especialista JB. Responda curto e grosso.
-        Use os dados abaixo para responder. Se não tiver o dado exato, diga que não consta.
-        
-        CONTEXTO:
-        {context}
-
-        PERGUNTA: {question}
-        """
-        
+        prompt = f"Use o CONTEXTO abaixo para responder a PERGUNTA de forma curta.\nCONTEXTO:\n{context}\n\nPERGUNTA: {question}"
         try:
             response = model.generate_content(prompt, stream=True)
             for chunk in response:
                 if chunk.text: yield f"data: {json.dumps({'text': chunk.text})}\n\n"
             yield "data: [DONE]\n\n"
         except Exception as e: yield f"data: {json.dumps({'text': str(e)})}\n\n"
-
     return Response(generate(), mimetype="text/event-stream")
 
 @app.route("/api/conversations", methods=["GET", "POST", "OPTIONS"])
