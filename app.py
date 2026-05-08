@@ -37,6 +37,11 @@ def get_context(query):
             params = [f"%{w}%" for w in words]
             cursor.execute(f"SELECT conteudo FROM documentos WHERE {where} LIMIT 10", params)
             for r in cursor.fetchall(): all_results.append(r['conteudo'])
+            if not all_results:
+                for w in words:
+                    if any(c.isdigit() for c in w) or len(w) >= 3:
+                        cursor.execute("SELECT conteudo FROM documentos WHERE conteudo ILIKE %s LIMIT 5", (f"%{w}%",))
+                        for r in cursor.fetchall(): all_results.append(r['conteudo'])
         conn.close()
         return "\n\n".join(list(dict.fromkeys(all_results))[:15])
     except: return ""
@@ -51,18 +56,18 @@ def ask():
     def generate():
         genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
         model = genai.GenerativeModel("gemini-flash-latest")
-        # PROMPT DE DEBBUGING: Pede para a IA não esconder nada
         prompt = f"""
-        CONTEXTO RECEBIDO:
+        VOCÊ É O ESPECIALISTA EM LOGÍSTICA DO GRUPO JB.
+        
+        INSTRUÇÃO CRÍTICA:
+        1. Analise o CONTEXTO abaixo para responder à PERGUNTA.
+        2. Seja flexível com códigos de rotas: Se o usuário perguntar por "FOR 101" e você encontrar "CAU101" (da Filial Fortaleza), entenda que é a mesma rota.
+        3. Se encontrar o nome do Motorista ou Parceiro, responda apenas: "O motorista da rota [Nome da Rota] é [Nome do Motorista]."
+        
+        CONTEXTO:
         {context}
 
-        ---
-        PERGUNTA DO USUÁRIO: {question}
-
-        INSTRUÇÃO: 
-        1. Procure no CONTEXTO acima pela resposta.
-        2. Se encontrar o nome de um Motorista ou Parceiro, responda IMEDIATAMENTE.
-        3. Não diga que a informação não está disponível se houver qualquer dado sobre a rota ou localidade no contexto.
+        PERGUNTA: {question}
         """
         try:
             response = model.generate_content(prompt, stream=True)
@@ -72,7 +77,6 @@ def ask():
         except Exception as e: yield f"data: {json.dumps({'text': str(e)})}\n\n"
     return Response(generate(), mimetype="text/event-stream")
 
-# Mantendo login e conversas
 @app.route("/api/login", methods=["POST", "OPTIONS"])
 def login():
     if request.method == "OPTIONS": return jsonify({"status": "ok"}), 200
@@ -86,32 +90,6 @@ def login():
         conn.close()
         return jsonify({"status": "success", "user": user}) if user else (jsonify({"status": "error"}), 401)
     except Exception as e: return jsonify({"error": str(e)}), 500
-
-@app.route("/api/conversations", methods=["GET", "POST", "OPTIONS"])
-def conversations():
-    if request.method == "OPTIONS": return jsonify({"status": "ok"}), 200
-    user_id = request.args.get("user_id") or (request.json.get("user_id") if request.is_json else None)
-    conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    if request.method == "POST":
-        cur.execute("INSERT INTO conversas (user_id, titulo) VALUES (%s, %s) RETURNING id", (user_id, request.json.get("titulo", "Conversa")))
-        chat_id = cur.fetchone()["id"]
-        conn.commit()
-        conn.close()
-        return jsonify({"id": chat_id})
-    cur.execute("SELECT id, titulo FROM conversas WHERE user_id = %s ORDER BY id DESC", (user_id,))
-    rows = cur.fetchall()
-    conn.close()
-    return jsonify(rows)
-
-@app.route("/api/messages/<int:id>")
-def messages(id):
-    conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT role, content FROM mensagens WHERE conversa_id = %s ORDER BY id ASC", (id,))
-    rows = cur.fetchall()
-    conn.close()
-    return jsonify(rows)
 
 if __name__ == "__main__":
     app.run()
