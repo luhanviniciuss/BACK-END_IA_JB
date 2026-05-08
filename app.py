@@ -29,33 +29,17 @@ def get_context(query):
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         clean_query = query.lower().strip()
-        
-        # Palavras para IGNORAR na busca
-        stop_words = ["quem", "qual", "o", "a", "os", "as", "de", "do", "da", "dos", "das", "em", "um", "uma", "no", "na", "é", "são", "onde", "onde", "motorista", "rota", "subrota"]
-        
-        # Pega apenas as palavras importantes (como FOR, 101, PTC)
+        stop_words = ["quem", "qual", "o", "a", "os", "as", "de", "do", "da", "em", "um", "no", "é", "motorista", "rota"]
         words = [w for w in clean_query.split() if w not in stop_words and len(w) >= 2]
-        
         all_results = []
-
         if words:
-            # 1. Tenta achar TODAS as palavras importantes juntas (Muito preciso)
             where = " AND ".join(["conteudo ILIKE %s" for _ in words])
             params = [f"%{w}%" for w in words]
-            cursor.execute(f"SELECT conteudo FROM documentos WHERE {where} LIMIT 5", params)
+            cursor.execute(f"SELECT conteudo FROM documentos WHERE {where} LIMIT 10", params)
             for r in cursor.fetchall(): all_results.append(r['conteudo'])
-
-            # 2. Se falhou, tenta achar pelo menos UMA das palavras importantes (ex: só o 101)
-            if not all_results:
-                for w in words:
-                    if len(w) >= 3 or any(c.isdigit() for c in w):
-                        cursor.execute("SELECT conteudo FROM documentos WHERE conteudo ILIKE %s LIMIT 3", (f"%{w}%",))
-                        for r in cursor.fetchall(): all_results.append(r['conteudo'])
-        
         conn.close()
-        return "\n\n".join(list(dict.fromkeys(all_results))[:12])
-    except Exception as e:
-        return ""
+        return "\n\n".join(list(dict.fromkeys(all_results))[:15])
+    except: return ""
 
 @app.route("/api/ask", methods=["POST", "OPTIONS"])
 def ask():
@@ -67,7 +51,19 @@ def ask():
     def generate():
         genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
         model = genai.GenerativeModel("gemini-flash-latest")
-        prompt = f"Use o CONTEXTO JB abaixo para responder a PERGUNTA.\nCONTEXTO:\n{context}\n\nPERGUNTA: {question}\n\nResponda apenas o que foi pedido de forma curta."
+        # PROMPT DE DEBBUGING: Pede para a IA não esconder nada
+        prompt = f"""
+        CONTEXTO RECEBIDO:
+        {context}
+
+        ---
+        PERGUNTA DO USUÁRIO: {question}
+
+        INSTRUÇÃO: 
+        1. Procure no CONTEXTO acima pela resposta.
+        2. Se encontrar o nome de um Motorista ou Parceiro, responda IMEDIATAMENTE.
+        3. Não diga que a informação não está disponível se houver qualquer dado sobre a rota ou localidade no contexto.
+        """
         try:
             response = model.generate_content(prompt, stream=True)
             for chunk in response:
