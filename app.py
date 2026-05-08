@@ -30,28 +30,24 @@ def get_context(query):
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         clean_query = re.sub(r"[^\w\s]", " ", query.lower()).strip()
-        stop_words = ["quem", "qual", "o", "a", "os", "as", "de", "do", "da", "em", "um", "no", "é", "motorista", "rota", "subrota"]
-        words = [w for w in clean_query.split() if w not in stop_words and len(w) >= 2]
+        
+        # 1. Tenta a busca pelo termo GRUDADO (Ex: FOR101)
+        term_joined = clean_query.replace(" ", "")
         all_results = []
         
-        # Busca no Treinamento (Excel)
-        cursor.execute("SELECT resposta_correta FROM treinamento_ia WHERE %s ILIKE '%%' || pergunta || '%%' LIMIT 1", (clean_query,))
-        train = cursor.fetchone()
-        if train: all_results.append(f"CONHECIMENTO: {train['resposta_correta']}")
+        cursor.execute("SELECT conteudo FROM documentos WHERE conteudo ILIKE %s LIMIT 10", (f"%{term_joined}%",))
+        for r in cursor.fetchall(): all_results.append(r['conteudo'])
 
-        if words:
-            # Busca de precisão na D23
-            where = " AND ".join(["conteudo ILIKE %s" for _ in words])
-            params = [f"%{w}%" for w in words]
-            cursor.execute(f"SELECT conteudo FROM documentos WHERE {where} LIMIT 5", params)
-            for r in cursor.fetchall(): all_results.append(r['conteudo'])
-            
-            # Busca flexível
-            if not all_results:
-                for w in words:
-                    if any(c.isdigit() for c in w) or len(w) >= 3:
-                        cursor.execute("SELECT conteudo FROM documentos WHERE conteudo ILIKE %s LIMIT 3", (f"%{w}%",))
-                        for r in cursor.fetchall(): all_results.append(r['conteudo'])
+        # 2. Se não achar nada grudado, tenta a busca AND
+        if not all_results:
+            stop_words = ["quem", "qual", "o", "a", "os", "as", "de", "do", "da", "em", "um", "no", "é", "motorista", "rota"]
+            words = [w for w in clean_query.split() if w not in stop_words and len(w) >= 2]
+            if words:
+                where = " AND ".join(["conteudo ILIKE %s" for _ in words])
+                params = [f"%{w}%" for w in words]
+                cursor.execute(f"SELECT conteudo FROM documentos WHERE {where} LIMIT 10", params)
+                for r in cursor.fetchall(): all_results.append(r['conteudo'])
+
         conn.close()
         return "\n\n".join(list(dict.fromkeys(all_results))[:15])
     except: return ""
@@ -65,7 +61,20 @@ def ask():
     def generate():
         genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
         model = genai.GenerativeModel("gemini-flash-latest")
-        prompt = f"Você é o Especialista JB. RESPONDA APENAS O NOME OU O DADO SOLICITADO. Seja ultra-resumido.\nCONTEXTO:\n{context}\n\nPERGUNTA: {question}"
+        prompt = f"""
+        Você é o Especialista JB. 
+        
+        REGRAS DE OURO:
+        1. Identifique o código da ROTA na pergunta.
+        2. Procure no CONTEXTO pela linha onde 'SUBROTA:' seja EXATAMENTE igual ao código (Ex: FOR101).
+        3. Se a pergunta for sobre FOR101, ignore resultados de CAU101.
+        4. Responda apenas: "O motorista da rota [Código] é [Nome]."
+        
+        CONTEXTO:
+        {context}
+
+        PERGUNTA: {question}
+        """
         try:
             response = model.generate_content(prompt, stream=True)
             for chunk in response:
@@ -73,46 +82,6 @@ def ask():
             yield "data: [DONE]\n\n"
         except Exception as e: yield f"data: {json.dumps({'text': str(e)})}\n\n"
     return Response(generate(), mimetype="text/event-stream")
-
-@app.route("/api/login", methods=["POST", "OPTIONS"])
-def login():
-    if request.method == "OPTIONS": return jsonify({"status": "ok"}), 200
-    data = request.json
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        pwd_hash = hashlib.sha256(data.get("password").encode()).hexdigest()
-        cur.execute("SELECT id, username, role FROM usuarios WHERE username = %s AND password = %s", (data.get("username"), pwd_hash))
-        user = cur.fetchone()
-        conn.close()
-        return jsonify({"status": "success", "user": user}) if user else (jsonify({"status": "error"}), 401)
-    except Exception as e: return jsonify({"error": str(e)}), 500
-
-@app.route("/api/conversations", methods=["GET", "POST", "OPTIONS"])
-def conversations():
-    if request.method == "OPTIONS": return jsonify({"status": "ok"}), 200
-    user_id = request.args.get("user_id") or (request.json.get("user_id") if request.is_json else None)
-    conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    if request.method == "POST":
-        cur.execute("INSERT INTO conversas (user_id, titulo) VALUES (%s, %s) RETURNING id", (user_id, request.json.get("titulo", "Conversa")))
-        chat_id = cur.fetchone()["id"]
-        conn.commit()
-        conn.close()
-        return jsonify({"id": chat_id})
-    cur.execute("SELECT id, titulo FROM conversas WHERE user_id = %s ORDER BY id DESC", (user_id,))
-    rows = cur.fetchall()
-    conn.close()
-    return jsonify(rows)
-
-@app.route("/api/messages/<int:id>")
-def messages(id):
-    conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT role, content FROM mensagens WHERE conversa_id = %s ORDER BY id ASC", (id,))
-    rows = cur.fetchall()
-    conn.close()
-    return jsonify(rows)
 
 if __name__ == "__main__":
     app.run()
