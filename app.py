@@ -30,26 +30,25 @@ def get_context(query):
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         clean_query = re.sub(r"[^\w\s]", " ", query.lower()).strip()
-        
-        # 1. Tenta a busca pelo termo GRUDADO (Ex: FOR101)
-        term_joined = clean_query.replace(" ", "")
+        stop_words = ["quem", "qual", "o", "a", "os", "as", "de", "do", "da", "em", "um", "no", "é", "motorista", "rota", "subrota"]
+        words = [w for w in clean_query.split() if w not in stop_words and len(w) >= 2]
         all_results = []
         
-        cursor.execute("SELECT conteudo FROM documentos WHERE conteudo ILIKE %s LIMIT 10", (f"%{term_joined}%",))
-        for r in cursor.fetchall(): all_results.append(r['conteudo'])
+        if words:
+            # 1. Busca por termos combinados (AND) - LIMITE AUMENTADO PARA 50
+            where = " AND ".join(["conteudo ILIKE %s" for _ in words])
+            params = [f"%{w}%" for w in words]
+            cursor.execute(f"SELECT conteudo FROM documentos WHERE {where} LIMIT 50", params)
+            for r in cursor.fetchall(): all_results.append(r['conteudo'])
 
-        # 2. Se não achar nada grudado, tenta a busca AND
-        if not all_results:
-            stop_words = ["quem", "qual", "o", "a", "os", "as", "de", "do", "da", "em", "um", "no", "é", "motorista", "rota"]
-            words = [w for w in clean_query.split() if w not in stop_words and len(w) >= 2]
-            if words:
-                where = " AND ".join(["conteudo ILIKE %s" for _ in words])
-                params = [f"%{w}%" for w in words]
-                cursor.execute(f"SELECT conteudo FROM documentos WHERE {where} LIMIT 10", params)
+            # 2. Busca pelo código "grudado" se houver espaço
+            if len(words) >= 2:
+                joined = "".join(words[-2:]) # Pega os dois últimos termos (ex: for e 101)
+                cursor.execute("SELECT conteudo FROM documentos WHERE conteudo ILIKE %s LIMIT 20", (f"%{joined}%",))
                 for r in cursor.fetchall(): all_results.append(r['conteudo'])
-
+        
         conn.close()
-        return "\n\n".join(list(dict.fromkeys(all_results))[:15])
+        return "\n\n".join(list(dict.fromkeys(all_results))[:30]) # Entrega mais contexto para a IA decidir
     except: return ""
 
 @app.route("/api/ask", methods=["POST", "OPTIONS"])
@@ -63,12 +62,8 @@ def ask():
         model = genai.GenerativeModel("gemini-flash-latest")
         prompt = f"""
         Você é o Especialista JB. 
-        
-        REGRAS DE OURO:
-        1. Identifique o código da ROTA na pergunta.
-        2. Procure no CONTEXTO pela linha onde 'SUBROTA:' seja EXATAMENTE igual ao código (Ex: FOR101).
-        3. Se a pergunta for sobre FOR101, ignore resultados de CAU101.
-        4. Responda apenas: "O motorista da rota [Código] é [Nome]."
+        Procure no CONTEXTO pela rota exata pedida.
+        Diferencie bem códigos parecidos (Ex: FOR101 é diferente de CAU101).
         
         CONTEXTO:
         {context}
