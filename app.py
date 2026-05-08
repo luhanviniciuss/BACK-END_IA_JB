@@ -34,19 +34,21 @@ def get_context(query, history=None):
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         
         clean_query = query.lower().strip()
-        
         all_results = []
         
-        # 1. BUSCA PRIORITÁRIA NO TREINAMENTO (EXCEL)
+        # 1. BUSCA NO TREINAMENTO (EXCEL)
         cursor.execute("SELECT resposta_correta FROM treinamento_ia WHERE %s ILIKE '%%' || pergunta || '%%' OR pergunta ILIKE '%%' || %s || '%%' LIMIT 1", (clean_query, clean_query))
         train = cursor.fetchone()
         if train:
-            all_results.append(f"RESPOSTA EXATA DO TREINAMENTO: {train['resposta_correta']}")
+            all_results.append(f"CONHECIMENTO: {train['resposta_correta']}")
 
-        # 2. BUSCA NA D23 E DOCUMENTOS
-        words = [w for w in clean_query.split() if len(w) > 3]
-        for w in words[:4]:
-            cursor.execute("SELECT conteudo FROM documentos WHERE conteudo ILIKE %s OR conteudo_limpo ILIKE %s LIMIT 5", (f"%{w}%", f"%{w}%"))
+        # 2. BUSCA NA D23 (MELHORADA PARA CÓDIGOS CURTOS COMO 'FOR' OU '101')
+        # Pega todas as palavras com 3 ou mais letras, ou que tenham números
+        words = [w for w in clean_query.split() if len(w) >= 3 or any(char.isdigit() for char in w)]
+        
+        for w in words:
+            # Busca agressiva: Procura a palavra cercada de espaços ou no início/fim para ser exato
+            cursor.execute("SELECT conteudo FROM documentos WHERE conteudo ILIKE %s LIMIT 8", (f"%{w}%",))
             for r in cursor.fetchall():
                 all_results.append(r['conteudo'])
         
@@ -82,11 +84,9 @@ def ask():
         model = genai.GenerativeModel("gemini-flash-latest")
         
         prompt = f"""
-        Você é o Especialista JB.
-        RESPONDA APENAS COM BASE NO CONTEXTO. 
-        Respostas curtas e diretas. Se for motorista, diga apenas o nome.
-        Se não souber, diga: "Informação não consta nos manuais."
-
+        Você é o Especialista JB. Responda curto e grosso.
+        Use os dados abaixo para responder. Se não tiver o dado exato, diga que não consta.
+        
         CONTEXTO:
         {context}
 
