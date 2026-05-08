@@ -30,28 +30,32 @@ def get_context(query):
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         clean_query = query.lower().strip()
         
-        # Pega todas as palavras com 2 ou mais letras
-        words = [w for w in clean_query.split() if len(w) >= 2]
+        # Palavras para IGNORAR na busca
+        stop_words = ["quem", "qual", "o", "a", "os", "as", "de", "do", "da", "dos", "das", "em", "um", "uma", "no", "na", "é", "são", "onde", "onde", "motorista", "rota", "subrota"]
+        
+        # Pega apenas as palavras importantes (como FOR, 101, PTC)
+        words = [w for w in clean_query.split() if w not in stop_words and len(w) >= 2]
+        
         all_results = []
 
-        # 1. Busca por termos combinados (AND) - Mais preciso
-        if len(words) >= 2:
+        if words:
+            # 1. Tenta achar TODAS as palavras importantes juntas (Muito preciso)
             where = " AND ".join(["conteudo ILIKE %s" for _ in words])
             params = [f"%{w}%" for w in words]
             cursor.execute(f"SELECT conteudo FROM documentos WHERE {where} LIMIT 5", params)
             for r in cursor.fetchall(): all_results.append(r['conteudo'])
 
-        # 2. Busca por palavras individuais (OR) - Se a primeira falhar
-        if not all_results:
-            for w in words:
-                if w not in ["quem", "da", "do", "rota"]:
-                    cursor.execute("SELECT conteudo FROM documentos WHERE conteudo ILIKE %s LIMIT 3", (f"%{w}%",))
-                    for r in cursor.fetchall(): all_results.append(r['conteudo'])
+            # 2. Se falhou, tenta achar pelo menos UMA das palavras importantes (ex: só o 101)
+            if not all_results:
+                for w in words:
+                    if len(w) >= 3 or any(c.isdigit() for c in w):
+                        cursor.execute("SELECT conteudo FROM documentos WHERE conteudo ILIKE %s LIMIT 3", (f"%{w}%",))
+                        for r in cursor.fetchall(): all_results.append(r['conteudo'])
         
         conn.close()
-        return "\n\n".join(list(dict.fromkeys(all_results))[:10])
+        return "\n\n".join(list(dict.fromkeys(all_results))[:12])
     except Exception as e:
-        return f"ERRO NA BUSCA: {str(e)}"
+        return ""
 
 @app.route("/api/ask", methods=["POST", "OPTIONS"])
 def ask():
@@ -63,8 +67,7 @@ def ask():
     def generate():
         genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
         model = genai.GenerativeModel("gemini-flash-latest")
-        # Prompt mais agressivo para forçar o uso do contexto
-        prompt = f"VOCÊ É O ESPECIALISTA JB. USE O CONTEXTO ABAIXO PARA RESPONDER A PERGUNTA.\nCONTEXTO:\n{context}\n\nPERGUNTA: {question}\n\nResponda apenas o dado solicitado."
+        prompt = f"Use o CONTEXTO JB abaixo para responder a PERGUNTA.\nCONTEXTO:\n{context}\n\nPERGUNTA: {question}\n\nResponda apenas o que foi pedido de forma curta."
         try:
             response = model.generate_content(prompt, stream=True)
             for chunk in response:
@@ -73,7 +76,7 @@ def ask():
         except Exception as e: yield f"data: {json.dumps({'text': str(e)})}\n\n"
     return Response(generate(), mimetype="text/event-stream")
 
-# Mantendo as outras rotas (login, etc) simplificadas para o gunicorn
+# Mantendo login e conversas
 @app.route("/api/login", methods=["POST", "OPTIONS"])
 def login():
     if request.method == "OPTIONS": return jsonify({"status": "ok"}), 200
