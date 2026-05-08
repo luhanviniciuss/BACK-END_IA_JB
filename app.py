@@ -4,6 +4,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 import json
 import os
+import re
 import hashlib
 import google.generativeai as genai
 
@@ -28,8 +29,10 @@ def get_context(query):
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        clean_query = query.lower().strip()
-        stop_words = ["quem", "qual", "o", "a", "os", "as", "de", "do", "da", "em", "um", "no", "é", "motorista", "rota"]
+        # Limpa pontuação
+        clean_query = re.sub(r"[^\w\s]", " ", query.lower()).strip()
+        
+        stop_words = ["quem", "qual", "o", "a", "os", "as", "de", "do", "da", "em", "um", "no", "é", "motorista", "rota", "subrota"]
         words = [w for w in clean_query.split() if w not in stop_words and len(w) >= 2]
         all_results = []
         if words:
@@ -52,23 +55,10 @@ def ask():
     data = request.json
     question = data.get("question")
     context = get_context(question)
-
     def generate():
         genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
         model = genai.GenerativeModel("gemini-flash-latest")
-        prompt = f"""
-        VOCÊ É O ESPECIALISTA EM LOGÍSTICA DO GRUPO JB.
-        
-        INSTRUÇÃO CRÍTICA:
-        1. Analise o CONTEXTO abaixo para responder à PERGUNTA.
-        2. Seja flexível com códigos de rotas: Se o usuário perguntar por "FOR 101" e você encontrar "CAU101" (da Filial Fortaleza), entenda que é a mesma rota.
-        3. Se encontrar o nome do Motorista ou Parceiro, responda apenas: "O motorista da rota [Nome da Rota] é [Nome do Motorista]."
-        
-        CONTEXTO:
-        {context}
-
-        PERGUNTA: {question}
-        """
+        prompt = f"CONTEXTO JB:\n{context}\n\nPERGUNTA: {question}\n\nResponda o motorista de forma curta."
         try:
             response = model.generate_content(prompt, stream=True)
             for chunk in response:
@@ -76,20 +66,6 @@ def ask():
             yield "data: [DONE]\n\n"
         except Exception as e: yield f"data: {json.dumps({'text': str(e)})}\n\n"
     return Response(generate(), mimetype="text/event-stream")
-
-@app.route("/api/login", methods=["POST", "OPTIONS"])
-def login():
-    if request.method == "OPTIONS": return jsonify({"status": "ok"}), 200
-    data = request.json
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        pwd_hash = hashlib.sha256(data.get("password").encode()).hexdigest()
-        cur.execute("SELECT id, username, role FROM usuarios WHERE username = %s AND password = %s", (data.get("username"), pwd_hash))
-        user = cur.fetchone()
-        conn.close()
-        return jsonify({"status": "success", "user": user}) if user else (jsonify({"status": "error"}), 401)
-    except Exception as e: return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     app.run()
