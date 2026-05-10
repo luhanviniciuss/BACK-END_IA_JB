@@ -35,23 +35,20 @@ def get_context(query):
         
         if words:
             joined = "".join(words[-2:]).upper()
-            # Pega MUITAS linhas para garantir que não perca nenhum motorista diferente
-            cursor.execute("SELECT conteudo FROM documentos WHERE conteudo ILIKE %s LIMIT 100", (f"%SUBROTA: {joined}%",))
+            # Pega MUITAS linhas para não perder ninguém (Aumentado para 200)
+            cursor.execute("SELECT conteudo FROM documentos WHERE conteudo ILIKE %s LIMIT 200", (f"%SUBROTA: {joined}%",))
             rows = cursor.fetchall()
             
-            # Filtro Inteligente: Pega apenas linhas que tenham motoristas diferentes
             seen_drivers = set()
             for r in rows:
                 content = r['conteudo']
-                # Tenta extrair o nome do motorista do texto
                 match = re.search(r"Motorista:\s*([^|]+)", content)
                 if match:
                     driver = match.group(1).strip()
                     if driver not in seen_drivers:
                         seen_drivers.add(driver)
-                        all_results.append(content)
-                if len(all_results) >= 10: break # Já temos motoristas suficientes
-                
+                        all_results.append(content) # Adiciona a primeira linha que encontrar de cada motorista
+        
         conn.close()
         return "\n\n".join(all_results)
     except: return ""
@@ -65,7 +62,7 @@ def ask():
     def generate():
         genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
         model = genai.GenerativeModel("gemini-flash-latest")
-        prompt = f"Você é o Especialista JB. Liste TODOS os motoristas diferentes que aparecem no contexto para a rota solicitada.\nCONTEXTO:\n{context}\n\nPERGUNTA: {question}"
+        prompt = f"Você é o Especialista JB. Liste TODOS os motoristas diferentes que aparecem no contexto.\nCONTEXTO:\n{context}\n\nPERGUNTA: {question}"
         try:
             response = model.generate_content(prompt, stream=True)
             for chunk in response:
