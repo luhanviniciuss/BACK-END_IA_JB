@@ -31,26 +31,25 @@ def get_context(query):
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         clean_query = re.sub(r"[^\w\s]", " ", query.lower()).strip()
         words = [w for w in clean_query.split() if len(w) >= 2 and w not in ["quem", "motorista", "rota"]]
-        all_results = []
         
-        if words:
-            joined = "".join(words[-2:]).upper()
-            # Pega MUITAS linhas para não perder ninguém (Aumentado para 200)
-            cursor.execute("SELECT conteudo FROM documentos WHERE conteudo ILIKE %s LIMIT 200", (f"%SUBROTA: {joined}%",))
-            rows = cursor.fetchall()
-            
-            seen_drivers = set()
-            for r in rows:
-                content = r['conteudo']
-                match = re.search(r"Motorista:\s*([^|]+)", content)
-                if match:
-                    driver = match.group(1).strip()
-                    if driver not in seen_drivers:
-                        seen_drivers.add(driver)
-                        all_results.append(content) # Adiciona a primeira linha que encontrar de cada motorista
+        if not words: return ""
+        
+        joined = "".join(words[-2:]).upper()
+        cursor.execute("SELECT conteudo FROM documentos WHERE conteudo ILIKE %s LIMIT 300", (f"%SUBROTA: {joined}%",))
+        rows = cursor.fetchall()
+        
+        drivers = set()
+        for r in rows:
+            # Pega o nome do motorista e limpa espaços/tabs invisíveis
+            match = re.search(r"Motorista:\s*([^|]+)", r['conteudo'])
+            if match:
+                name = match.group(1).strip().replace("\t", "").replace("\n", "")
+                if name: drivers.add(name)
         
         conn.close()
-        return "\n\n".join(all_results)
+        if drivers:
+            return "MOTORISTAS ENCONTRADOS: " + ", ".join(list(drivers))
+        return ""
     except: return ""
 
 @app.route("/api/ask", methods=["POST", "OPTIONS"])
@@ -62,7 +61,7 @@ def ask():
     def generate():
         genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
         model = genai.GenerativeModel("gemini-flash-latest")
-        prompt = f"Você é o Especialista JB. Liste TODOS os motoristas diferentes que aparecem no contexto.\nCONTEXTO:\n{context}\n\nPERGUNTA: {question}"
+        prompt = f"Você é o Especialista JB. {context}. Responda à pergunta: {question}"
         try:
             response = model.generate_content(prompt, stream=True)
             for chunk in response:
